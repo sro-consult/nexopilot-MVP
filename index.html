@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>nexoPilot - Générateur de Rapports</title>
+    
+    <!-- SheetJS pour lire les fichiers Excel -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+    
     <style>
         * {
             margin: 0;
@@ -210,8 +214,11 @@
     </div>
 
     <script>
-        // REMPLACEZ CETTE URL PAR VOTRE URL AZURE FUNCTION
-        const AZURE_FUNCTION_URL = 'https://nexopilot-mvp.azurewebsites.net/api/GetPdfReport?code=LV8X1KOZ3KSnei5GWzBcMl1WBpDNCe1TUDnTHegYhyxGAzFuoA14Mg==';
+        // URL de base de votre Azure Function (SANS le code)
+        const AZURE_BASE_URL = 'https://nexopilot-mvp.azurewebsites.net/api/GetPdfReport';
+        
+        // Partie publique de la clé (dans le code du site)
+        const PUBLIC_KEY_PART = '?code=';
 
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
@@ -222,6 +229,7 @@
         const status = document.getElementById('status');
 
         let selectedFile = null;
+        let apiKeyPart = null;
 
         // Click sur la zone de dépôt
         dropZone.addEventListener('click', () => {
@@ -250,7 +258,7 @@
         });
 
         // Gestion du fichier sélectionné
-        function handleFile(file) {
+        async function handleFile(file) {
             if (!file) return;
 
             // Vérifier que c'est un fichier Excel
@@ -259,30 +267,89 @@
                 return;
             }
 
-            selectedFile = file;
+            showStatus('loading', '<span class="spinner"></span> Lecture du fichier Excel...');
 
-            // Afficher les infos du fichier
-            fileName.textContent = `📄 ${file.name}`;
-            fileSize.textContent = `Taille : ${(file.size / 1024).toFixed(2)} KB`;
-            fileInfo.classList.add('show');
+            try {
+                // Lire le fichier Excel
+                const data = await file.arrayBuffer();
+                const workbook = XLSX.read(data);
 
-            // Activer le bouton
-            generateBtn.disabled = false;
+                // Essayer de lire la plage nommée API_KEY_PART
+                const apiKeyFromExcel = getNamedRange(workbook, 'API_KEY_PART');
 
-            // Cacher le statut précédent
-            status.classList.remove('show');
+                if (!apiKeyFromExcel) {
+                    showStatus('error', '❌ Fichier Excel invalide : clé d\'authentification manquante');
+                    return;
+                }
+
+                // Stocker la clé
+                apiKeyPart = apiKeyFromExcel;
+                selectedFile = file;
+
+                // Afficher les infos du fichier
+                fileName.textContent = `📄 ${file.name}`;
+                fileSize.textContent = `Taille : ${(file.size / 1024).toFixed(2)} KB`;
+                fileInfo.classList.add('show');
+
+                // Activer le bouton
+                generateBtn.disabled = false;
+
+                // Message de succès
+                showStatus('success', '✅ Fichier validé avec succès !');
+                setTimeout(() => status.classList.remove('show'), 2000);
+
+            } catch (error) {
+                console.error('Erreur lecture Excel:', error);
+                showStatus('error', '❌ Erreur lors de la lecture du fichier Excel');
+            }
+        }
+
+        // Fonction pour lire une plage nommée dans Excel
+        function getNamedRange(workbook, rangeName) {
+            try {
+                // Méthode 1 : Via les plages nommées définies
+                if (workbook.Workbook && workbook.Workbook.Names) {
+                    const namedRange = workbook.Workbook.Names.find(n => n.Name === rangeName);
+                    if (namedRange) {
+                        const ref = namedRange.Ref.split('!')[1];
+                        const sheetName = namedRange.Ref.split('!')[0];
+                        const sheet = workbook.Sheets[sheetName];
+                        if (sheet && sheet[ref]) {
+                            return sheet[ref].v;
+                        }
+                    }
+                }
+
+                // Méthode 2 : Chercher dans l'onglet "technic" cellule A2
+                if (workbook.Sheets['technic']) {
+                    const cell = workbook.Sheets['technic']['A2'];
+                    if (cell && cell.v) {
+                        return cell.v;
+                    }
+                }
+
+                return null;
+            } catch (error) {
+                console.error('Erreur lecture plage nommée:', error);
+                return null;
+            }
         }
 
         // Génération du rapport
         generateBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
+            if (!selectedFile || !apiKeyPart) return;
 
             showStatus('loading', '<span class="spinner"></span> Génération du rapport en cours...');
             generateBtn.disabled = true;
 
             try {
+                // Construire l'URL complète avec la clé
+                const fullUrl = AZURE_BASE_URL + PUBLIC_KEY_PART + apiKeyPart;
+
+                console.log('Appel Azure Function...'); // Pour debug
+
                 // Appel de la fonction Azure
-                const response = await fetch(AZURE_FUNCTION_URL, {
+                const response = await fetch(fullUrl, {
                     method: 'GET'
                 });
 
@@ -310,7 +377,7 @@
 
             } catch (error) {
                 console.error('Erreur:', error);
-                showStatus('error', '❌ Erreur lors de la génération du rapport. Veuillez réessayer.');
+                showStatus('error', '❌ Erreur lors de la génération du rapport. Vérifiez votre fichier Excel.');
                 generateBtn.disabled = false;
             }
         });
@@ -324,6 +391,7 @@
         // Réinitialiser le formulaire
         function resetForm() {
             selectedFile = null;
+            apiKeyPart = null;
             fileInput.value = '';
             fileInfo.classList.remove('show');
             generateBtn.disabled = true;
